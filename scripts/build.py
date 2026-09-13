@@ -78,7 +78,6 @@ SOURCES = {
     },
 }
 
-
 ALLOWLIST_SOURCES = {
     "anudeepnd": {
         "name": "AnudeepND Whitelist",
@@ -101,6 +100,7 @@ ALLOWLIST_SOURCES = {
         "parser": "allowlist",
     },
 }
+
 
 
 def utc_now() -> datetime:
@@ -655,34 +655,69 @@ def refresh_source(
         ) from exc
 
 
-def load_allowlist() -> set[str]:
-    """Load the local exact-match allowlist."""
+def load_allowlist() -> tuple[set[str], set[str]]:
+    """Load exact allowlist entries and explicitly trusted suffixes.
+
+    Normal entries are exact-match only. A line beginning with ``*.`` is
+    treated as a suffix rule and matches that suffix plus any subdomain.
+    Suffix rules are intentionally supported only in the local allowlist;
+    external community allowlists remain exact-match lists.
+    """
 
     if not ALLOWLIST_FILE.exists():
-        return set()
+        return set(), set()
 
-    allowlist: set[str] = set()
+    exact_allowlist: set[str] = set()
+    trusted_suffixes: set[str] = set()
 
-    for line in ALLOWLIST_FILE.read_text(
+    for raw_line in ALLOWLIST_FILE.read_text(
         encoding="utf-8"
     ).splitlines():
+        line = raw_line.strip()
 
-        hostname = normalize_hostname(
-            line
-        )
+        if not line or line.startswith("#"):
+            continue
+
+        if line.startswith("*."):
+            hostname = normalize_hostname(line[2:])
+
+            if hostname:
+                trusted_suffixes.add(hostname)
+
+            continue
+
+        hostname = normalize_hostname(line)
 
         if hostname:
-            allowlist.add(hostname)
+            exact_allowlist.add(hostname)
 
-    return allowlist
+    return exact_allowlist, trusted_suffixes
+
+
+def is_allowlisted(
+    hostname: str,
+    exact_allowlist: set[str],
+    trusted_suffixes: set[str],
+) -> bool:
+    """Return whether a hostname is covered by the local allowlist."""
+
+    if hostname in exact_allowlist:
+        return True
+
+    for suffix in trusted_suffixes:
+        if hostname.endswith("." + suffix):
+            return True
+
+    return False
 
 
 def build_combined(
     source_domains: dict[str, set[str]],
     local_allowlist: set[str],
+    trusted_suffixes: set[str],
     external_allowlists: dict[str, set[str]],
 ) -> tuple[set[str], dict[str, int], dict[str, int]]:
-    """Build the final unique domain set using exact-match allowlists."""
+    """Build the final unique domain set using local exact/suffix rules."""
 
     all_domains: set[str] = set()
 
@@ -694,13 +729,23 @@ def build_combined(
     for domains in external_allowlists.values():
         external_allowlist_union.update(domains)
 
-    combined_allowlist = (
+    exact_combined_allowlist = (
         local_allowlist | external_allowlist_union
     )
 
+    local_matches = {
+        hostname
+        for hostname in all_domains
+        if is_allowlisted(
+            hostname,
+            local_allowlist,
+            trusted_suffixes,
+        )
+    }
+
     blocked_by_allowlist = (
-        all_domains & combined_allowlist
-    )
+        exact_combined_allowlist | local_matches
+    ) & all_domains
 
     external_matches = {
         source_id: len(all_domains & domains)
@@ -709,22 +754,24 @@ def build_combined(
     }
 
     final_domains = (
-        all_domains - combined_allowlist
+        all_domains - blocked_by_allowlist
     )
 
     return final_domains, {
         "raw_unique": len(all_domains),
         "allowlisted": len(blocked_by_allowlist),
         "local_allowlisted": len(
-            all_domains & local_allowlist
+            blocked_by_allowlist & local_matches
+        ),
+        "trusted_suffix_matches": len(
+            local_matches - local_allowlist
         ),
         "external_allowlisted": len(
             all_domains & external_allowlist_union
         ),
-        "final_unique": len(
-            final_domains
-        ),
+        "final_unique": len(final_domains),
     }, external_matches
+
 
 
 def calculate_overlap(
@@ -771,6 +818,7 @@ def write_statistics(
     allowlist_status: dict[str, str],
     state: dict,
     local_allowlist: set[str],
+    trusted_suffixes: set[str],
     final_domains: set[str],
     allowlist_matches: dict[str, int],
 ) -> None:
@@ -881,6 +929,9 @@ def write_statistics(
         "local_allowlist_entries": len(
             local_allowlist
         ),
+        "trusted_suffix_entries": len(
+            trusted_suffixes
+        ),
         "external_allowlist_entries": len(
             external_union
         ),
@@ -889,6 +940,17 @@ def write_statistics(
         ),
         "local_allowlist_matches": len(
             all_domains & local_allowlist
+        ),
+        "trusted_suffix_matches": len(
+            {
+                hostname
+                for hostname in all_domains
+                if is_allowlisted(
+                    hostname,
+                    set(),
+                    trusted_suffixes,
+                )
+            }
         ),
         "external_allowlist_matches": len(
             all_domains & external_union
@@ -916,10 +978,12 @@ def write_statistics(
         f.write("\n")
 
 
+
 def write_final_list(
     source_domains: dict[str, set[str]],
     final_domains: set[str],
     local_allowlist: set[str],
+    trusted_suffixes: set[str],
     external_allowlists: dict[str, set[str]],
     allowlist_matches: dict[str, int],
 ) -> None:
@@ -954,12 +1018,28 @@ def write_final_list(
         local_allowlist | external_union
     )
 
-    allowlisted = len(
+    trusted_matches_set = {
+        hostname
+        for hostname in all_domains
+        if is_allowlisted(
+            hostname,
+            set(),
+            trusted_suffixes,
+        )
+    }
+
+    allowlisted_set = (
         all_domains & combined_allowlist
-    )
+    ) | trusted_matches_set
+
+    allowlisted = len(allowlisted_set)
 
     local_matches = len(
         all_domains & local_allowlist
+    )
+
+    trusted_matches = len(
+        trusted_matches_set
     )
 
     external_matches = len(
@@ -992,8 +1072,13 @@ def write_final_list(
         )
 
         f.write(
-            f"# Local allowlist matches removed: "
+            f"# Local exact allowlist matches removed: "
             f"{local_matches:,}\n"
+        )
+
+        f.write(
+            f"# Trusted vendor suffix matches removed: "
+            f"{trusted_matches:,}\n"
         )
 
         f.write(
@@ -1024,6 +1109,7 @@ def write_final_list(
             f.write(
                 f"||{domain}^\n"
             )
+
 
 
 def main() -> None:
@@ -1102,7 +1188,10 @@ def main() -> None:
 
     save_state(state)
 
-    local_allowlist = load_allowlist()
+    (
+        local_allowlist,
+        trusted_suffixes,
+    ) = load_allowlist()
 
     (
         final_domains,
@@ -1111,6 +1200,7 @@ def main() -> None:
     ) = build_combined(
         source_domains,
         local_allowlist,
+        trusted_suffixes,
         allowlist_domains,
     )
 
@@ -1118,6 +1208,7 @@ def main() -> None:
         source_domains,
         final_domains,
         local_allowlist,
+        trusted_suffixes,
         allowlist_domains,
         allowlist_matches,
     )
@@ -1129,6 +1220,7 @@ def main() -> None:
         allowlist_status,
         state,
         local_allowlist,
+        trusted_suffixes,
         final_domains,
         allowlist_matches,
     )
@@ -1185,6 +1277,7 @@ def main() -> None:
     print(
         "Build completed successfully."
     )
+
 
 
 if __name__ == "__main__":
