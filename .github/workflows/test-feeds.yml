@@ -9,10 +9,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -21,10 +21,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Test feeds
+      - name: Test feeds and build list
         run: |
           python scripts/build.py
 
       - name: Show statistics
         run: |
           cat data/statistics.json
+
+      - name: Show list summary
+        run: |
+          echo "Generated list:"
+          wc -l lists/phishing.txt
+          echo
+          echo "First 20 entries:"
+          head -20 lists/phishing.txt
