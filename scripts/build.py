@@ -1,41 +1,26 @@
-#!/usr/bin/env python3
+from __future__ import annotations
 
+import csv
+import io
+import ipaddress
 import json
 import re
-import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
 
 
-# ------------------------------------------------------------
-# Paths
-# ------------------------------------------------------------
-
-ROOT = Path(__file__).resolve().parent.parent
-
+ROOT = Path(__file__).resolve().parents[1]
 SOURCE_DIR = ROOT / "lists" / "sources"
 OUTPUT_DIR = ROOT / "lists"
 DATA_DIR = ROOT / "data"
 ALLOWLIST_FILE = ROOT / "allowlist.txt"
+STATE_FILE = DATA_DIR / "source_state.json"
 
-SOURCE_DIR.mkdir(parents=True, exist_ok=True)
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-
-# ------------------------------------------------------------
-# Configuration
-# ------------------------------------------------------------
-
-HEADERS = {
-    "User-Agent": "phishing-blocklist/1.0"
-}
-
+USER_AGENT = "phishing-blocklist/1.0"
 TIMEOUT = 60
-
 
 SOURCES = {
     "phishing_database": {
@@ -45,483 +30,567 @@ SOURCES = {
             "Phishing-Database/Phishing.Database/master/"
             "phishing-domains-ACTIVE.txt"
         ),
+        "interval_hours": 2,
+        "parser": "domains",
     },
-
     "openphish": {
         "name": "OpenPhish Community Feed",
-        "url": (
-            "https://raw.githubusercontent.com/"
-            "openphish/public_feed/main/feed.txt"
-        ),
+        "url": "https://raw.githubusercontent.com/openphish/public_feed/main/feed.txt",
+        "interval_hours": 12,
+        "parser": "urls",
     },
-
     "cert_polska": {
-        "name": "CERT Polska Warning List",
-        "url": (
-            "https://hole.cert.pl/domains/v2/domains.txt"
-        ),
+        "name": "CERT Polska Warning List v2",
+        "url": "https://hole.cert.pl/domains/v2/domains.txt",
+        "interval_hours": 2,
+        "parser": "domains",
     },
-
     "destroylist": {
-        "name": "Destroylist Primary Active",
+        "name": "PhishDestroy Destroylist Primary Active",
         "url": (
-            "https://raw.githubusercontent.com/"
-            "phishdestroy/destroylist/main/rootlist/formats/"
-            "primary_active/domains.txt"
+            "https://cdn.jsdelivr.net/gh/"
+            "phishdestroy/destroylist@main/"
+            "rootlist/formats/primary_active/domains.txt"
         ),
+        "interval_hours": 2,
+        "parser": "domains",
+    },
+    "phishtank": {
+        "name": "PhishTank online-valid",
+        "url": "https://data.phishtank.com/data/online-valid.csv",
+        "interval_hours": 12,
+        "parser": "phishtank",
     },
 }
 
 
-# ------------------------------------------------------------
-# Download
-# ------------------------------------------------------------
-
-def download(url):
-    print(f"Downloading: {url}")
-
-    response = requests.get(
-        url,
-        headers=HEADERS,
-        timeout=TIMEOUT,
-    )
-
-    response.raise_for_status()
-
-    if not response.text.strip():
-        raise RuntimeError("Feed is empty")
-
-    return response.text
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
-# ------------------------------------------------------------
-# IDN / hostname normalization
-# ------------------------------------------------------------
+def utc_string(value: datetime) -> str:
+    return value.isoformat(timespec="seconds").replace("+00:00", "Z")
 
-def normalize_hostname(value):
-    """
-    Convert a URL/domain into a normalized hostname.
 
-    Examples:
+def parse_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
 
-        HTTPS://Example.COM/login
-            ->
-        example.com
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
-        ||Example.COM^
-            ->
-        example.com
-    """
 
+def normalize_hostname(value: str) -> str | None:
     value = value.strip()
 
     if not value or value.startswith("#"):
         return None
 
-    # Remove surrounding whitespace.
-    value = value.strip()
+    # Remove inline comments commonly found in blocklists.
+    value = value.split("#", 1)[0].strip()
 
-    # Handle AdGuard/uBlock syntax if encountered.
+    # AdGuard / AdBlock style.
     if value.startswith("||"):
         value = value[2:]
 
-    value = value.rstrip("^")
+    value = value.rstrip("^").strip()
+
+    if not value:
+        return None
+
+    # Remove surrounding whitespace/quotes.
+    value = value.strip("\"'")
 
     # URL -> hostname.
     if "://" in value:
         try:
             parsed = urlparse(value)
             value = parsed.hostname or ""
-        except Exception:
+        except ValueError:
             return None
 
-    # Remove a trailing DNS dot.
-    value = value.rstrip(".")
+    # Handle accidental leading //.
+    if value.startswith("//"):
+        try:
+            parsed = urlparse("https:" + value)
+            value = parsed.hostname or ""
+        except ValueError:
+            return None
 
-    value = value.lower()
+    value = value.strip().rstrip(".").lower()
 
     if not value:
         return None
 
-    # Remove accidental whitespace.
-    if any(char.isspace() for char in value):
+    # Reject IP addresses.
+    try:
+        ipaddress.ip_address(value)
         return None
+    except ValueError:
+        pass
 
-    # A hostname must not contain URL paths.
-    if "/" in value:
-        return None
+    # Remove a possible port.
+    if ":" in value and value.count(":") == 1:
+        host, port = value.rsplit(":", 1)
+        if port.isdigit():
+            value = host
 
-    # IPv4 / IPv6 addresses are not wanted in this domain list.
-    if re.fullmatch(r"[0-9.]+", value):
-        return None
-
-    if ":" in value:
-        return None
-
-    # Convert Unicode IDNs to ASCII/Punycode.
+    # IDN -> ASCII / punycode.
     try:
         value = value.encode("idna").decode("ascii")
     except UnicodeError:
         return None
 
-    # Maximum DNS hostname length.
     if len(value) > 253:
         return None
 
-    # Basic hostname validation.
     labels = value.split(".")
 
-    # We require a real domain rather than a single hostname label.
     if len(labels) < 2:
         return None
 
+    # DNS label validation.
+    label_re = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+
     for label in labels:
-        if not label:
+        if not label_re.fullmatch(label):
             return None
 
-        if len(label) > 63:
-            return None
+    # Basic TLD sanity check.
+    tld = labels[-1]
 
-        if label.startswith("-") or label.endswith("-"):
-            return None
+    if len(tld) < 2:
+        return None
 
-        if not re.fullmatch(r"[a-z0-9-]+", label):
-            return None
-
-    # Require a plausible TLD.
-    if not re.fullmatch(r"[a-z0-9-]{2,63}", labels[-1]):
+    if not re.fullmatch(r"[a-z0-9-]+", tld):
         return None
 
     return value
 
 
-# ------------------------------------------------------------
-# Parse feed
-# ------------------------------------------------------------
+def looks_like_html(text: str) -> bool:
+    sample = text.lstrip().lower()[:1000]
 
-def parse_feed(text):
-    domains = set()
+    return (
+        sample.startswith("<!doctype html")
+        or sample.startswith("<html")
+        or "<html" in sample[:500]
+    )
+
+
+def parse_domains(text: str) -> set[str]:
+    domains: set[str] = set()
 
     for line in text.splitlines():
-        domain = normalize_hostname(line)
+        hostname = normalize_hostname(line)
 
-        if domain:
-            domains.add(domain)
+        if hostname:
+            domains.add(hostname)
 
     return domains
 
 
-# ------------------------------------------------------------
-# Allowlist
-# ------------------------------------------------------------
+def parse_urls(text: str) -> set[str]:
+    # OpenPhish contains URLs, not just hostnames.
+    return parse_domains(text)
 
-def load_allowlist():
-    allowlist = set()
 
+def parse_phishtank(text: str) -> set[str]:
+    domains: set[str] = set()
+
+    reader = csv.DictReader(io.StringIO(text))
+
+    required_columns = {"url", "verified", "online"}
+
+    if not reader.fieldnames:
+        raise ValueError("PhishTank CSV has no header")
+
+    actual_columns = {column.strip() for column in reader.fieldnames}
+
+    if not required_columns.issubset(actual_columns):
+        raise ValueError(
+            f"PhishTank CSV missing required columns: "
+            f"{required_columns - actual_columns}"
+        )
+
+    for row in reader:
+        verified = row.get("verified", "").strip().lower()
+        online = row.get("online", "").strip().lower()
+
+        if verified != "yes" or online != "yes":
+            continue
+
+        url = row.get("url", "").strip()
+
+        if not url:
+            continue
+
+        hostname = normalize_hostname(url)
+
+        if hostname:
+            domains.add(hostname)
+
+    return domains
+
+
+def parse_feed(text: str, parser: str) -> set[str]:
+    if not text.strip():
+        raise ValueError("Feed is empty")
+
+    if looks_like_html(text):
+        raise ValueError("Feed appears to contain HTML instead of feed data")
+
+    if parser == "domains":
+        return parse_domains(text)
+
+    if parser == "urls":
+        return parse_urls(text)
+
+    if parser == "phishtank":
+        return parse_phishtank(text)
+
+    raise ValueError(f"Unknown parser: {parser}")
+
+
+def load_state() -> dict:
+    if not STATE_FILE.exists():
+        return {}
+
+    try:
+        with STATE_FILE.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        return data if isinstance(data, dict) else {}
+
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_state(state: dict) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    with STATE_FILE.open("w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2, sort_keys=True)
+
+        f.write("\n")
+
+
+def load_snapshot(source_id: str) -> set[str]:
+    path = SOURCE_DIR / f"{source_id}.txt"
+
+    if not path.exists():
+        return set()
+
+    try:
+        return parse_domains(path.read_text(encoding="utf-8"))
+    except OSError:
+        return set()
+
+
+def save_snapshot(source_id: str, domains: set[str]) -> None:
+    SOURCE_DIR.mkdir(parents=True, exist_ok=True)
+
+    path = SOURCE_DIR / f"{source_id}.txt"
+
+    with path.open("w", encoding="utf-8") as f:
+        for domain in sorted(domains):
+            f.write(domain + "\n")
+
+
+def is_due(source_id: str, source: dict, state: dict, snapshot: set[str]) -> bool:
+    if not snapshot:
+        return True
+
+    source_state = state.get(source_id, {})
+    last_success = parse_timestamp(source_state.get("last_success"))
+
+    if not last_success:
+        return True
+
+    elapsed = utc_now() - last_success
+
+    return elapsed >= timedelta(hours=source["interval_hours"])
+
+
+def download_feed(url: str) -> str:
+    response = requests.get(
+        url,
+        headers={"User-Agent": USER_AGENT},
+        timeout=TIMEOUT,
+    )
+
+    response.raise_for_status()
+
+    if not response.text.strip():
+        raise ValueError("Downloaded feed is empty")
+
+    return response.text
+
+
+def refresh_source(
+    source_id: str,
+    source: dict,
+    state: dict,
+) -> tuple[set[str], str]:
+    snapshot = load_snapshot(source_id)
+
+    if not is_due(source_id, source, state, snapshot):
+        return snapshot, "cached"
+
+    print(
+        f"Refreshing {source['name']} "
+        f"(interval: {source['interval_hours']}h)"
+    )
+
+    previous_count = len(snapshot)
+
+    try:
+        text = download_feed(source["url"])
+        domains = parse_feed(text, source["parser"])
+
+        if not domains:
+            raise ValueError("Feed produced zero valid domains")
+
+        # Protect against catastrophic feed corruption.
+        # A genuine reduction is allowed, but an extreme sudden collapse
+        # is treated as suspicious when a reasonably sized previous feed exists.
+        if previous_count >= 100 and len(domains) < previous_count * 0.05:
+            raise ValueError(
+                f"Suspicious feed size drop: "
+                f"{previous_count} -> {len(domains)} domains"
+            )
+
+        save_snapshot(source_id, domains)
+
+        state[source_id] = {
+            "last_success": utc_string(utc_now()),
+            "last_count": len(domains),
+        }
+
+        print(f"  Updated: {len(domains):,} domains")
+
+        return domains, "updated"
+
+    except Exception as exc:
+        if snapshot:
+            print(
+                f"  WARNING: refresh failed: {exc}"
+                f"\n  Using last-known-good snapshot: "
+                f"{len(snapshot):,} domains"
+            )
+
+            return snapshot, "stale"
+
+        raise RuntimeError(
+            f"{source['name']} failed and no previous snapshot exists: {exc}"
+        ) from exc
+
+
+def load_allowlist() -> set[str]:
     if not ALLOWLIST_FILE.exists():
-        return allowlist
+        return set()
 
-    with ALLOWLIST_FILE.open(
-        "r",
-        encoding="utf-8",
-    ) as file:
-        for line in file:
-            domain = normalize_hostname(line)
+    allowlist: set[str] = set()
 
-            if domain:
-                allowlist.add(domain)
+    for line in ALLOWLIST_FILE.read_text(encoding="utf-8").splitlines():
+        hostname = normalize_hostname(line)
+
+        if hostname:
+            allowlist.add(hostname)
 
     return allowlist
 
 
-def apply_allowlist(domains, allowlist):
-    """
-    Remove exact allowlisted hostnames.
+def build_combined(
+    source_domains: dict[str, set[str]],
+    allowlist: set[str],
+) -> tuple[set[str], dict[str, int]]:
+    all_domains: set[str] = set()
 
-    We intentionally do NOT automatically remove all subdomains
-    of an allowlisted domain. This prevents an accidentally broad
-    allowlist entry from weakening the blocklist.
-    """
+    for domains in source_domains.values():
+        all_domains.update(domains)
 
-    return domains - allowlist
+    blocked_by_allowlist = all_domains & allowlist
 
+    final_domains = all_domains - allowlist
 
-# ------------------------------------------------------------
-# Save source data
-# ------------------------------------------------------------
-
-def save_source(name, domains):
-    path = SOURCE_DIR / f"{name}.txt"
-
-    with path.open(
-        "w",
-        encoding="utf-8",
-        newline="\n",
-    ) as file:
-
-        for domain in sorted(domains):
-            file.write(domain + "\n")
-
-
-# ------------------------------------------------------------
-# Build AdGuard list
-# ------------------------------------------------------------
-
-def build_adguard_list(domains, statistics):
-    path = OUTPUT_DIR / "phishing.txt"
-
-    generated = statistics["generated_at"]
-
-    lines = [
-        "! Title: Community Phishing Blocklist",
-        "! Description: Aggregated phishing domains from multiple threat-intelligence sources",
-        "! Format: AdGuard DNS filtering syntax",
-        f"! Updated: {generated}",
-        f"! Total unique domains: {len(domains):,}",
-        "!",
-        "! Sources:",
-    ]
-
-    for source_id, source in SOURCES.items():
-        count = statistics["sources"][source_id]["count"]
-
-        lines.append(
-            f"!   {source['name']}: {count:,}"
-        )
-
-    lines.extend([
-        "!",
-        "! Repository:",
-        "! https://github.com/Idealism4261/phishing-blocklist",
-        "!",
-    ])
-
-    for domain in sorted(domains):
-        lines.append(f"||{domain}^")
-
-    with path.open(
-        "w",
-        encoding="utf-8",
-        newline="\n",
-    ) as file:
-        file.write("\n".join(lines))
-        file.write("\n")
-
-    return path
-
-
-# ------------------------------------------------------------
-# Main
-# ------------------------------------------------------------
-
-def main():
-
-    generated_at = datetime.now(timezone.utc).isoformat()
-
-    statistics = {
-        "generated_at": generated_at,
-        "sources": {},
-        "total_unique_domains": 0,
-        "allowlisted_domains": 0,
+    return final_domains, {
+        "raw_unique": len(all_domains),
+        "allowlisted": len(blocked_by_allowlist),
+        "final_unique": len(final_domains),
     }
 
-    all_domains = set()
+
+def calculate_overlap(source_domains: dict[str, set[str]]) -> dict:
+    domain_sources: dict[str, int] = {}
+
+    for domains in source_domains.values():
+        for domain in domains:
+            domain_sources[domain] = domain_sources.get(domain, 0) + 1
+
+    distribution: dict[str, int] = {}
+
+    for count in domain_sources.values():
+        key = str(count)
+        distribution[key] = distribution.get(key, 0) + 1
+
+    return {
+        "source_count_distribution": {
+            f"{count}_source": amount
+            for count, amount in sorted(
+                ((int(k), v) for k, v in distribution.items()),
+                key=lambda item: item[0],
+            )
+        }
+    }
+
+
+def write_statistics(
+    source_domains: dict[str, set[str]],
+    source_status: dict[str, str],
+    state: dict,
+    allowlist: set[str],
+    final_domains: set[str],
+) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    overlap = calculate_overlap(source_domains)
+
+    sources = {}
+
+    for source_id, source in SOURCES.items():
+        source_state = state.get(source_id, {})
+
+        sources[source_id] = {
+            "name": source["name"],
+            "url": source["url"],
+            "refresh_interval_hours": source["interval_hours"],
+            "status": source_status.get(source_id, "unknown"),
+            "domain_count": len(source_domains.get(source_id, set())),
+            "last_success": source_state.get("last_success"),
+        }
+
+    stats = {
+        "generated_at": utc_string(utc_now()),
+        "sources": sources,
+        "raw_unique_domains": len(
+            set().union(*source_domains.values())
+        ),
+        "allowlist_entries": len(allowlist),
+        "final_unique_domains": len(final_domains),
+        "overlap": overlap,
+    }
+
+    with (DATA_DIR / "statistics.json").open("w", encoding="utf-8") as f:
+        json.dump(stats, f, indent=2, sort_keys=True)
+        f.write("\n")
+
+
+def write_final_list(
+    source_domains: dict[str, set[str]],
+    final_domains: set[str],
+    allowlist: set[str],
+) -> None:
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    path = OUTPUT_DIR / "phishing.txt"
+
+    source_counts = {
+        source_id: len(domains)
+        for source_id, domains in source_domains.items()
+    }
+
+    allowlisted = len(
+        set().union(*source_domains.values()) & allowlist
+    )
+
+    with path.open("w", encoding="utf-8") as f:
+        f.write("# Phishing Blocklist - AdGuard Home format\n")
+        f.write(
+            f"# Generated: {utc_string(utc_now())}\n"
+        )
+        f.write(
+            f"# Final unique domains: {len(final_domains):,}\n"
+        )
+        f.write(
+            f"# Allowlisted domains removed: {allowlisted:,}\n"
+        )
+
+        for source_id, source in SOURCES.items():
+            f.write(
+                f"# {source['name']}: "
+                f"{source_counts.get(source_id, 0):,}\n"
+            )
+
+        f.write("#\n")
+
+        for domain in sorted(final_domains):
+            f.write(f"||{domain}^\n")
+
+
+def main() -> None:
+    print("=== Phishing Blocklist Builder ===")
+    print()
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    SOURCE_DIR.mkdir(parents=True, exist_ok=True)
+
+    state = load_state()
+
+    source_domains: dict[str, set[str]] = {}
+    source_status: dict[str, str] = {}
+
+    for source_id, source in SOURCES.items():
+        domains, status = refresh_source(
+            source_id,
+            source,
+            state,
+        )
+
+        source_domains[source_id] = domains
+        source_status[source_id] = status
+
+    save_state(state)
 
     allowlist = load_allowlist()
 
-    print(
-        f"Loaded {len(allowlist):,} allowlisted domains"
+    final_domains, summary = build_combined(
+        source_domains,
+        allowlist,
     )
 
-    failed = False
+    write_final_list(
+        source_domains,
+        final_domains,
+        allowlist,
+    )
 
-    # --------------------------------------------------------
-    # Download and process each source
-    # --------------------------------------------------------
+    write_statistics(
+        source_domains,
+        source_status,
+        state,
+        allowlist,
+        final_domains,
+    )
+
+    print()
+    print("=== Summary ===")
 
     for source_id, source in SOURCES.items():
-
-        try:
-            text = download(source["url"])
-
-            domains = parse_feed(text)
-
-            if not domains:
-                raise RuntimeError(
-                    "Parser returned zero valid domains"
-                )
-
-            # Apply local allowlist.
-            original_count = len(domains)
-
-            domains = apply_allowlist(
-                domains,
-                allowlist,
-            )
-
-            removed = original_count - len(domains)
-
-            save_source(
-                source_id,
-                domains,
-            )
-
-            all_domains.update(domains)
-
-            statistics["sources"][source_id] = {
-                "name": source["name"],
-                "url": source["url"],
-                "count": len(domains),
-                "allowlisted": removed,
-                "status": "ok",
-            }
-
-            print(
-                f"{source['name']}: "
-                f"{len(domains):,} domains "
-                f"({removed:,} allowlisted)"
-            )
-
-        except Exception as exc:
-
-            print(
-                f"ERROR: {source['name']}: {exc}",
-                file=sys.stderr,
-            )
-
-            statistics["sources"][source_id] = {
-                "name": source["name"],
-                "url": source["url"],
-                "count": 0,
-                "allowlisted": 0,
-                "status": "failed",
-                "error": str(exc),
-            }
-
-            failed = True
-
-    # --------------------------------------------------------
-    # Never publish a combined list if a source failed.
-    # --------------------------------------------------------
-
-    if failed:
         print(
-            "One or more feeds failed. "
-            "The combined list will NOT be generated.",
-            file=sys.stderr,
-        )
-
-        with (DATA_DIR / "statistics.json").open(
-            "w",
-            encoding="utf-8",
-        ) as file:
-            json.dump(
-                statistics,
-                file,
-                indent=2,
-                ensure_ascii=False,
-            )
-
-        sys.exit(1)
-
-    # --------------------------------------------------------
-    # Combined statistics
-    # --------------------------------------------------------
-
-    statistics["total_unique_domains"] = len(all_domains)
-
-    statistics["allowlisted_domains"] = len(allowlist)
-
-    # Count how many sources detected each domain.
-    source_membership = {}
-
-    for source_id in SOURCES:
-
-        source_file = SOURCE_DIR / f"{source_id}.txt"
-
-        with source_file.open(
-            "r",
-            encoding="utf-8",
-        ) as file:
-
-            for line in file:
-
-                domain = line.strip()
-
-                if not domain:
-                    continue
-
-                source_membership.setdefault(
-                    domain,
-                    set(),
-                ).add(source_id)
-
-    overlap = {
-        "one_source": 0,
-        "two_sources": 0,
-        "three_sources": 0,
-        "four_sources": 0,
-    }
-
-    for sources in source_membership.values():
-
-        count = len(sources)
-
-        if count == 1:
-            overlap["one_source"] += 1
-        elif count == 2:
-            overlap["two_sources"] += 1
-        elif count == 3:
-            overlap["three_sources"] += 1
-        elif count == 4:
-            overlap["four_sources"] += 1
-
-    statistics["source_overlap"] = overlap
-
-    # --------------------------------------------------------
-    # Generate final AdGuard list
-    # --------------------------------------------------------
-
-    output = build_adguard_list(
-        all_domains,
-        statistics,
-    )
-
-    # --------------------------------------------------------
-    # Save statistics
-    # --------------------------------------------------------
-
-    with (DATA_DIR / "statistics.json").open(
-        "w",
-        encoding="utf-8",
-    ) as file:
-
-        json.dump(
-            statistics,
-            file,
-            indent=2,
-            ensure_ascii=False,
+            f"{source['name']}: "
+            f"{len(source_domains[source_id]):,} "
+            f"[{source_status[source_id]}]"
         )
 
     print()
-    print("=" * 60)
-    print("BUILD COMPLETE")
-    print("=" * 60)
-    print(
-        f"Total unique domains: "
-        f"{len(all_domains):,}"
-    )
-    print(
-        f"AdGuard list: {output}"
-    )
+    print(f"Raw unique domains: {summary['raw_unique']:,}")
+    print(f"Allowlisted:        {summary['allowlisted']:,}")
+    print(f"Final unique:       {summary['final_unique']:,}")
     print()
-    print("Source overlap:")
-
-    for key, value in overlap.items():
-        print(
-            f"  {key.replace('_', ' ')}: "
-            f"{value:,}"
-        )
+    print("Build completed successfully.")
 
 
 if __name__ == "__main__":
