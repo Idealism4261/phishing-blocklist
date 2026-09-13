@@ -98,7 +98,7 @@ ALLOWLIST_SOURCES = {
             "whitelist.txt"
         ),
         "interval_hours": 24,
-        "parser": "domains",
+        "parser": "allowlist",
     },
 }
 
@@ -267,6 +267,39 @@ def parse_urls(text: str) -> set[str]:
     return parse_domains(text)
 
 
+def parse_allowlist_domains(text: str) -> set[str]:
+    """Parse exact-hostname entries from an AdGuard allowlist."""
+
+    domains: set[str] = set()
+
+    for line in text.splitlines():
+        line = line.strip()
+
+        if not line or line.startswith("#"):
+            continue
+
+        # Accept only exact AdGuard allow rules.
+        # Wildcards, regular expressions, paths, and other rule types
+        # are intentionally ignored because this project uses exact
+        # hostname matching for its phishing allowlist.
+        if not line.startswith("@@||"):
+            continue
+
+        rule = line[4:]
+
+        # Remove AdGuard rule modifiers and the rule terminator.
+        rule = rule.split("^", 1)[0]
+        rule = rule.split("$", 1)[0]
+        rule = rule.strip()
+
+        hostname = normalize_hostname(rule)
+
+        if hostname:
+            domains.add(hostname)
+
+    return domains
+
+
 def parse_phishtank(text: str) -> set[str]:
     """
     Parse PhishTank online-valid CSV.
@@ -363,6 +396,9 @@ def parse_feed(
 
     if parser == "urls":
         return parse_urls(text)
+
+    if parser == "allowlist":
+        return parse_allowlist_domains(text)
 
     if parser == "phishtank":
         return parse_phishtank(text)
@@ -644,70 +680,51 @@ def load_allowlist() -> set[str]:
 def build_combined(
     source_domains: dict[str, set[str]],
     local_allowlist: set[str],
-    allowlist_domains: dict[str, set[str]],
-) -> tuple[
-    set[str],
-    dict[str, int],
-    dict[str, int],
-]:
-    """
-    Build the final unique domain set.
-
-    All allowlists use exact hostname matching.
-
-    A domain is removed only when its exact hostname is present
-    in a local or external allowlist. Parent domains do not
-    automatically allow their subdomains.
-    """
+    external_allowlists: dict[str, set[str]],
+) -> tuple[set[str], dict[str, int], dict[str, int]]:
+    """Build the final unique domain set using exact-match allowlists."""
 
     all_domains: set[str] = set()
 
     for domains in source_domains.values():
         all_domains.update(domains)
 
-    external_allowlist_union = (
-        set().union(*allowlist_domains.values())
-        if allowlist_domains
-        else set()
-    )
+    external_allowlist_union: set[str] = set()
+
+    for domains in external_allowlists.values():
+        external_allowlist_union.update(domains)
 
     combined_allowlist = (
-        local_allowlist
-        | external_allowlist_union
+        local_allowlist | external_allowlist_union
     )
 
     blocked_by_allowlist = (
         all_domains & combined_allowlist
     )
 
+    external_matches = {
+        source_id: len(all_domains & domains)
+        for source_id, domains
+        in external_allowlists.items()
+    }
+
     final_domains = (
         all_domains - combined_allowlist
     )
 
-    external_matches = {}
-
-    for source_id, domains in allowlist_domains.items():
-        external_matches[source_id] = len(
-            all_domains & domains
-        )
-
-    return (
-        final_domains,
-        {
-            "raw_unique": len(all_domains),
-            "allowlisted": len(
-                blocked_by_allowlist
-            ),
-            "local_allowlisted": len(
-                all_domains & local_allowlist
-            ),
-            "external_allowlisted": len(
-                all_domains & external_allowlist_union
-            ),
-            "final_unique": len(final_domains),
-        },
-        external_matches,
-    )
+    return final_domains, {
+        "raw_unique": len(all_domains),
+        "allowlisted": len(blocked_by_allowlist),
+        "local_allowlisted": len(
+            all_domains & local_allowlist
+        ),
+        "external_allowlisted": len(
+            all_domains & external_allowlist_union
+        ),
+        "final_unique": len(
+            final_domains
+        ),
+    }, external_matches
 
 
 def calculate_overlap(
@@ -829,10 +846,7 @@ def write_statistics(
                 )
             ),
             "matched_blocked_domains": (
-                allowlist_matches.get(
-                    source_id,
-                    0
-                )
+                allowlist_matches.get(source_id, 0)
             ),
             "last_success": source_state.get(
                 "last_success"
@@ -855,8 +869,7 @@ def write_statistics(
     )
 
     combined_allowlist = (
-        local_allowlist
-        | external_union
+        local_allowlist | external_union
     )
 
     stats = {
@@ -938,8 +951,7 @@ def write_final_list(
     )
 
     combined_allowlist = (
-        local_allowlist
-        | external_union
+        local_allowlist | external_union
     )
 
     allowlisted = len(
@@ -1134,14 +1146,12 @@ def main() -> None:
 
     print()
     print("=== Allowlist Summary ===")
-
     print(
         f"Local allowlist entries:     "
         f"{len(local_allowlist):,}"
     )
 
     for source_id, source in ALLOWLIST_SOURCES.items():
-
         print(
             f"{source['name']}: "
             f"{len(allowlist_domains[source_id]):,} entries "
