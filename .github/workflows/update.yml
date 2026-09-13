@@ -54,7 +54,7 @@ jobs:
 
 
       # ------------------------------------------------------------
-      # RESTORE PREVIOUS FEED STATE
+      # RESTORE PREVIOUS SOURCE STATE
       # ------------------------------------------------------------
 
       - name: Restore previous feed state
@@ -64,7 +64,7 @@ jobs:
 
           if git ls-remote --exit-code --heads origin state >/dev/null 2>&1; then
             echo "Previous state branch found."
-            echo "Restoring previous feed snapshots..."
+            echo "Restoring previous feed and allowlist snapshots..."
 
             git fetch origin state:refs/remotes/origin/state
 
@@ -155,6 +155,29 @@ jobs:
                   """
               )
 
+          allowlist_rows = []
+
+          for source in stats["allowlist_sources"].values():
+              name = html.escape(source["name"])
+              count = f'{source["domain_count"]:,}'
+              matches = f'{source["matched_blocked_domains"]:,}'
+              status = html.escape(source["status"])
+              last_success = html.escape(
+                  source["last_success"] or "Never"
+              )
+
+              allowlist_rows.append(
+                  f"""
+                  <tr>
+                    <td>{name}</td>
+                    <td>{count}</td>
+                    <td>{matches}</td>
+                    <td>{status}</td>
+                    <td>{last_success}</td>
+                  </tr>
+                  """
+              )
+
           generated_at = html.escape(
               stats["generated_at"]
           )
@@ -164,6 +187,22 @@ jobs:
           raw_count = f'{stats["raw_unique_domains"]:,}'
 
           allowlisted = f'{stats["allowlist_entries"]:,}'
+
+          local_allowlist = (
+              f'{stats["local_allowlist_entries"]:,}'
+          )
+
+          external_allowlist = (
+              f'{stats["external_allowlist_entries"]:,}'
+          )
+
+          local_matches = (
+              f'{stats["local_allowlist_matches"]:,}'
+          )
+
+          external_matches = (
+              f'{stats["external_allowlist_matches"]:,}'
+          )
 
           html_content = f"""<!DOCTYPE html>
           <html lang="en">
@@ -275,6 +314,16 @@ jobs:
                 <div class="number">{allowlisted}</div>
               </div>
 
+              <div class="card">
+                <div>Local allowlist</div>
+                <div class="number">{local_allowlist}</div>
+              </div>
+
+              <div class="card">
+                <div>External allowlist</div>
+                <div class="number">{external_allowlist}</div>
+              </div>
+
             </div>
 
             <p>
@@ -313,6 +362,40 @@ jobs:
 
             </table>
 
+            <h2>External Allowlists</h2>
+
+            <p>
+              External allowlists are applied using exact hostname
+              matching only. Parent domains do not automatically
+              allow their subdomains.
+            </p>
+
+            <table>
+
+              <thead>
+                <tr>
+                  <th>Source</th>
+                  <th>Entries</th>
+                  <th>Blocked domains removed</th>
+                  <th>Status</th>
+                  <th>Last successful update</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {"".join(allowlist_rows)}
+              </tbody>
+
+            </table>
+
+            <p>
+              Local allowlist matches removed:
+              <strong>{local_matches}</strong>
+              &nbsp; | &nbsp;
+              External allowlist matches removed:
+              <strong>{external_matches}</strong>
+            </p>
+
           </body>
           </html>
           """
@@ -346,7 +429,7 @@ jobs:
       # DEPLOY GITHUB PAGES
       # ------------------------------------------------------------
 
-      - name: Deploy to GitHub Pages
+      - name: Deploy GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
 
