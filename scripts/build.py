@@ -79,6 +79,30 @@ SOURCES = {
 }
 
 
+ALLOWLIST_SOURCES = {
+    "anudeepnd": {
+        "name": "AnudeepND Whitelist",
+        "url": (
+            "https://raw.githubusercontent.com/"
+            "anudeepND/whitelist/master/domains/whitelist.txt"
+        ),
+        "interval_hours": 24,
+        "parser": "domains",
+    },
+
+    "dandelionsprout": {
+        "name": "DandelionSprout AdGuard Home Whitelist",
+        "url": (
+            "https://raw.githubusercontent.com/"
+            "DandelionSprout/AdGuard-Home-Whitelist/master/"
+            "whitelist.txt"
+        ),
+        "interval_hours": 24,
+        "parser": "domains",
+    },
+}
+
+
 def utc_now() -> datetime:
     """Return the current time as timezone-aware UTC."""
     return datetime.now(timezone.utc)
@@ -619,32 +643,71 @@ def load_allowlist() -> set[str]:
 
 def build_combined(
     source_domains: dict[str, set[str]],
-    allowlist: set[str],
-) -> tuple[set[str], dict[str, int]]:
-    """Build the final unique domain set."""
+    local_allowlist: set[str],
+    allowlist_domains: dict[str, set[str]],
+) -> tuple[
+    set[str],
+    dict[str, int],
+    dict[str, int],
+]:
+    """
+    Build the final unique domain set.
+
+    All allowlists use exact hostname matching.
+
+    A domain is removed only when its exact hostname is present
+    in a local or external allowlist. Parent domains do not
+    automatically allow their subdomains.
+    """
 
     all_domains: set[str] = set()
 
     for domains in source_domains.values():
         all_domains.update(domains)
 
+    external_allowlist_union = (
+        set().union(*allowlist_domains.values())
+        if allowlist_domains
+        else set()
+    )
+
+    combined_allowlist = (
+        local_allowlist
+        | external_allowlist_union
+    )
+
     blocked_by_allowlist = (
-        all_domains & allowlist
+        all_domains & combined_allowlist
     )
 
     final_domains = (
-        all_domains - allowlist
+        all_domains - combined_allowlist
     )
 
-    return final_domains, {
-        "raw_unique": len(all_domains),
-        "allowlisted": len(
-            blocked_by_allowlist
-        ),
-        "final_unique": len(
-            final_domains
-        ),
-    }
+    external_matches = {}
+
+    for source_id, domains in allowlist_domains.items():
+        external_matches[source_id] = len(
+            all_domains & domains
+        )
+
+    return (
+        final_domains,
+        {
+            "raw_unique": len(all_domains),
+            "allowlisted": len(
+                blocked_by_allowlist
+            ),
+            "local_allowlisted": len(
+                all_domains & local_allowlist
+            ),
+            "external_allowlisted": len(
+                all_domains & external_allowlist_union
+            ),
+            "final_unique": len(final_domains),
+        },
+        external_matches,
+    )
 
 
 def calculate_overlap(
@@ -687,9 +750,12 @@ def calculate_overlap(
 def write_statistics(
     source_domains: dict[str, set[str]],
     source_status: dict[str, str],
+    allowlist_domains: dict[str, set[str]],
+    allowlist_status: dict[str, str],
     state: dict,
-    allowlist: set[str],
+    local_allowlist: set[str],
     final_domains: set[str],
+    allowlist_matches: dict[str, int],
 ) -> None:
     """Write machine-readable statistics."""
 
@@ -737,19 +803,82 @@ def write_statistics(
             ),
         }
 
-    raw_unique = len(
-        set().union(
-            *source_domains.values()
+    external_sources = {}
+
+    for source_id, source in ALLOWLIST_SOURCES.items():
+
+        source_state = state.get(
+            source_id,
+            {},
         )
+
+        external_sources[source_id] = {
+            "name": source["name"],
+            "url": source["url"],
+            "refresh_interval_hours": (
+                source["interval_hours"]
+            ),
+            "status": allowlist_status.get(
+                source_id,
+                "unknown",
+            ),
+            "domain_count": len(
+                allowlist_domains.get(
+                    source_id,
+                    set(),
+                )
+            ),
+            "matched_blocked_domains": (
+                allowlist_matches.get(
+                    source_id,
+                    0
+                )
+            ),
+            "last_success": source_state.get(
+                "last_success"
+            ),
+            "last_success_ist": source_state.get(
+                "last_success_ist"
+            ),
+        }
+
+    all_domains = set().union(
+        *source_domains.values()
+    )
+
+    raw_unique = len(all_domains)
+
+    external_union = (
+        set().union(*allowlist_domains.values())
+        if allowlist_domains
+        else set()
+    )
+
+    combined_allowlist = (
+        local_allowlist
+        | external_union
     )
 
     stats = {
         "generated_at": utc_string(now),
         "generated_at_ist": ist_string(now),
         "sources": sources,
+        "allowlist_sources": external_sources,
         "raw_unique_domains": raw_unique,
+        "local_allowlist_entries": len(
+            local_allowlist
+        ),
+        "external_allowlist_entries": len(
+            external_union
+        ),
         "allowlist_entries": len(
-            allowlist
+            combined_allowlist
+        ),
+        "local_allowlist_matches": len(
+            all_domains & local_allowlist
+        ),
+        "external_allowlist_matches": len(
+            all_domains & external_union
         ),
         "final_unique_domains": len(
             final_domains
@@ -777,7 +906,9 @@ def write_statistics(
 def write_final_list(
     source_domains: dict[str, set[str]],
     final_domains: set[str],
-    allowlist: set[str],
+    local_allowlist: set[str],
+    external_allowlists: dict[str, set[str]],
+    allowlist_matches: dict[str, int],
 ) -> None:
     """Write the final AdGuard Home blocklist."""
 
@@ -800,8 +931,27 @@ def write_final_list(
         *source_domains.values()
     )
 
+    external_union = (
+        set().union(*external_allowlists.values())
+        if external_allowlists
+        else set()
+    )
+
+    combined_allowlist = (
+        local_allowlist
+        | external_union
+    )
+
     allowlisted = len(
-        all_domains & allowlist
+        all_domains & combined_allowlist
+    )
+
+    local_matches = len(
+        all_domains & local_allowlist
+    )
+
+    external_matches = len(
+        all_domains & external_union
     )
 
     with path.open(
@@ -829,11 +979,29 @@ def write_final_list(
             f"{allowlisted:,}\n"
         )
 
+        f.write(
+            f"# Local allowlist matches removed: "
+            f"{local_matches:,}\n"
+        )
+
+        f.write(
+            f"# External allowlist matches removed: "
+            f"{external_matches:,}\n"
+        )
+
         for source_id, source in SOURCES.items():
 
             f.write(
                 f"# {source['name']}: "
                 f"{source_counts.get(source_id, 0):,}\n"
+            )
+
+        for source_id, source in ALLOWLIST_SOURCES.items():
+
+            f.write(
+                f"# Allowlist - {source['name']}: "
+                f"{len(external_allowlists.get(source_id, set())):,} entries, "
+                f"{allowlist_matches.get(source_id, 0):,} matches\n"
             )
 
         f.write("#\n")
@@ -891,29 +1059,66 @@ def main() -> None:
             status
         )
 
+    allowlist_domains: dict[
+        str,
+        set[str],
+    ] = {}
+
+    allowlist_status: dict[
+        str,
+        str,
+    ] = {}
+
+    print()
+    print("=== External Allowlist Sources ===")
+
+    for source_id, source in ALLOWLIST_SOURCES.items():
+
+        domains, status = refresh_source(
+            source_id,
+            source,
+            state,
+        )
+
+        allowlist_domains[source_id] = (
+            domains
+        )
+
+        allowlist_status[source_id] = (
+            status
+        )
+
     save_state(state)
 
-    allowlist = load_allowlist()
+    local_allowlist = load_allowlist()
 
-    final_domains, summary = (
-        build_combined(
-            source_domains,
-            allowlist,
-        )
+    (
+        final_domains,
+        summary,
+        allowlist_matches,
+    ) = build_combined(
+        source_domains,
+        local_allowlist,
+        allowlist_domains,
     )
 
     write_final_list(
         source_domains,
         final_domains,
-        allowlist,
+        local_allowlist,
+        allowlist_domains,
+        allowlist_matches,
     )
 
     write_statistics(
         source_domains,
         source_status,
+        allowlist_domains,
+        allowlist_status,
         state,
-        allowlist,
+        local_allowlist,
         final_domains,
+        allowlist_matches,
     )
 
     print()
@@ -928,7 +1133,23 @@ def main() -> None:
         )
 
     print()
+    print("=== Allowlist Summary ===")
 
+    print(
+        f"Local allowlist entries:     "
+        f"{len(local_allowlist):,}"
+    )
+
+    for source_id, source in ALLOWLIST_SOURCES.items():
+
+        print(
+            f"{source['name']}: "
+            f"{len(allowlist_domains[source_id]):,} entries "
+            f"[{allowlist_status[source_id]}], "
+            f"{allowlist_matches[source_id]:,} matches"
+        )
+
+    print()
     print(
         f"Raw unique domains: "
         f"{summary['raw_unique']:,}"
