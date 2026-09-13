@@ -1,0 +1,7 @@
+# Local false-positive allowlist
+#
+# One hostname per line.
+# Lines beginning with # are ignored.
+#
+# Example:
+# example.com
