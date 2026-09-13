@@ -140,8 +140,10 @@ jobs:
               name = html.escape(source["name"])
               count = f'{source["domain_count"]:,}'
               status = html.escape(source["status"])
+
+              # Display IST on the webpage.
               last_success = html.escape(
-                  source["last_success"] or "Never"
+                  source["last_success_ist"] or "Never"
               )
 
               rows.append(
@@ -162,8 +164,10 @@ jobs:
               count = f'{source["domain_count"]:,}'
               matches = f'{source["matched_blocked_domains"]:,}'
               status = html.escape(source["status"])
+
+              # Display IST on the webpage.
               last_success = html.escape(
-                  source["last_success"] or "Never"
+                  source["last_success_ist"] or "Never"
               )
 
               allowlist_rows.append(
@@ -178,8 +182,11 @@ jobs:
                   """
               )
 
+          # Display IST on the webpage.
+          # The canonical UTC timestamp remains available
+          # inside statistics.json for machine-readable use.
           generated_at = html.escape(
-              stats["generated_at"]
+              stats["generated_at_ist"]
           )
 
           final_count = f'{stats["final_unique_domains"]:,}'
@@ -329,6 +336,7 @@ jobs:
             <p>
               Generated:
               <code>{generated_at}</code>
+              (IST)
             </p>
 
             <p>
@@ -352,7 +360,7 @@ jobs:
                   <th>Source</th>
                   <th>Domains</th>
                   <th>Status</th>
-                  <th>Last successful update</th>
+                  <th>Last successful update (IST)</th>
                 </tr>
               </thead>
 
@@ -378,7 +386,7 @@ jobs:
                   <th>Entries</th>
                   <th>Blocked domains removed</th>
                   <th>Status</th>
-                  <th>Last successful update</th>
+                  <th>Last successful update (IST)</th>
                 </tr>
               </thead>
 
@@ -391,7 +399,9 @@ jobs:
             <p>
               Local allowlist matches removed:
               <strong>{local_matches}</strong>
+
               &nbsp; | &nbsp;
+
               External allowlist matches removed:
               <strong>{external_matches}</strong>
             </p>
@@ -416,7 +426,7 @@ jobs:
 
 
       # ------------------------------------------------------------
-      # UPLOAD PAGES ARTIFACT
+      # UPLOAD GITHUB PAGES ARTIFACT
       # ------------------------------------------------------------
 
       - name: Upload GitHub Pages artifact
@@ -429,7 +439,7 @@ jobs:
       # DEPLOY GITHUB PAGES
       # ------------------------------------------------------------
 
-      - name: Deploy GitHub Pages
+      - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
 
