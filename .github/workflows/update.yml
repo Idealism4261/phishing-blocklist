@@ -310,7 +310,7 @@ jobs:
               </div>
 
               <div class="card">
-                <div>Allowlist entries</div>
+                <div>Unique allowlist entries</div>
                 <div class="number">{allowlisted}</div>
               </div>
 
