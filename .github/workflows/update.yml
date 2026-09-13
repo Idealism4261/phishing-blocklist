@@ -328,7 +328,7 @@ jobs:
 
             <p>
               Generated:
-              <code>{generated_at}</code> (IST)
+              <code>{generated_at}</code>
             </p>
 
             <p>
