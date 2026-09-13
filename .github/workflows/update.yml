@@ -1,0 +1,112 @@
+name: Update phishing blocklist
+
+on:
+  schedule:
+    # Every 2 hours, offset from the top of the hour.
+    - cron: "17 */2 * * *"
+
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: phishing-blocklist-update
+  cancel-in-progress: true
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Restore previous feed state
+        shell: bash
+        run: |
+          set -e
+
+          if git ls-remote --exit-code --heads origin state >/dev/null 2>&1; then
+            echo "Restoring previous state branch..."
+
+            git fetch origin state:refs/remotes/origin/state
+
+            git archive origin/state | tar -x
+
+            echo "Previous state restored."
+          else
+            echo "No state branch exists yet."
+            echo "This is the initial build."
+          fi
+
+      - name: Build blocklist
+        run: |
+          python scripts/build.py
+
+      - name: Show statistics
+        run: |
+          echo "=== statistics.json ==="
+          cat data/statistics.json
+
+          echo
+          echo "=== Final list ==="
+          wc -l lists/phishing.txt
+          echo
+          head -20 lists/phishing.txt
+
+      - name: Prepare state branch
+        shell: bash
+        run: |
+          set -e
+
+          rm -rf /tmp/phishing-state
+          mkdir -p /tmp/phishing-state/lists/sources
+          mkdir -p /tmp/phishing-state/data
+
+          cp lists/phishing.txt \
+            /tmp/phishing-state/lists/phishing.txt
+
+          cp lists/sources/*.txt \
+            /tmp/phishing-state/lists/sources/
+
+          cp data/source_state.json \
+            /tmp/phishing-state/data/source_state.json
+
+          cp data/statistics.json \
+            /tmp/phishing-state/data/statistics.json
+
+      - name: Publish state branch
+        shell: bash
+        run: |
+          set -e
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git switch --orphan state
+
+          git rm -rf . || true
+          git clean -fdx
+
+          cp -r /tmp/phishing-state/* .
+
+          touch .nojekyll
+
+          git add -A
+
+          git commit -m "Update generated phishing blocklist"
+
+          git push --force origin state
