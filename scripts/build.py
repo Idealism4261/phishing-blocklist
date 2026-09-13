@@ -573,6 +573,22 @@ def refresh_source(
         source_id
     )
 
+    # Backfill the human-readable IST timestamp for older state files.
+    # Older snapshots may contain last_success but not last_success_ist.
+    source_state = state.get(source_id)
+    if isinstance(source_state, dict):
+        if (
+            source_state.get("last_success")
+            and not source_state.get("last_success_ist")
+        ):
+            last_success = parse_timestamp(
+                source_state.get("last_success")
+            )
+            if last_success:
+                source_state["last_success_ist"] = ist_string(
+                    last_success
+                )
+
     if not is_due(
         source_id,
         source,
