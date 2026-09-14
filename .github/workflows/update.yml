@@ -454,7 +454,7 @@ jobs:
                 <tr>
                   <th>Reference list</th>
                   <th>Domains</th>
-                  <th>Our domains removed</th>
+                  <th>Matched Domains removed</th>
                   <th>Status</th>
                   <th>Last successful update (IST)</th>
                 </tr>
