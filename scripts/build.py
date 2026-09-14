@@ -26,6 +26,10 @@ TIMEOUT = 60
 
 IST = ZoneInfo("Asia/Kolkata")
 
+HOSTNAME_LABEL_RE = re.compile(
+    r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+)
+
 
 SOURCES = {
     "phishing_database": {
@@ -89,6 +93,40 @@ SOURCES = {
         "url_env": "THREATFOX_HOSTFILE_URL",
         "interval_hours": 2,
         "parser": "threatfox_hostfile",
+    },
+}
+
+# HaGeZi lists used only as deduplication/reference lists.
+# They are refreshed on their own cadence and cached in the state branch.
+# Their domains are never added to our output; they are only used to remove
+# domains that HaGeZi already covers.
+REFERENCE_SOURCES = {
+    "hagezi_tif": {
+        "name": "HaGeZi Threat Intelligence Feeds (TIF)",
+        "url": (
+            "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/"
+            "wildcard/tif-onlydomains.txt"
+        ),
+        "public_url": (
+            "https://github.com/hagezi/dns-blocklists/blob/main/"
+            "wildcard/tif-onlydomains.txt"
+        ),
+        "interval_hours": 6,
+        "parser": "domains",
+    },
+
+    "hagezi_ultimate": {
+        "name": "HaGeZi Multi Ultimate",
+        "url": (
+            "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/"
+            "wildcard/ultimate-onlydomains.txt"
+        ),
+        "public_url": (
+            "https://github.com/hagezi/dns-blocklists/blob/main/"
+            "wildcard/ultimate-onlydomains.txt"
+        ),
+        "interval_hours": 6,
+        "parser": "domains",
     },
 }
 
@@ -227,12 +265,8 @@ def normalize_hostname(value: str) -> str | None:
     if len(labels) < 2:
         return None
 
-    label_re = re.compile(
-        r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
-    )
-
     for label in labels:
-        if not label_re.fullmatch(label):
+        if not HOSTNAME_LABEL_RE.fullmatch(label):
             return None
 
     # Basic TLD sanity check.
@@ -511,11 +545,16 @@ def load_snapshot(
         return set()
 
     try:
-        return parse_domains(
-            path.read_text(
+        # Snapshots are written by this builder after normalization, so avoid
+        # re-running URL/IDN/IP validation on millions of already-normalized
+        # lines. This matters for large reference feeds such as HaGeZi TIF.
+        return {
+            line.strip()
+            for line in path.read_text(
                 encoding="utf-8"
-            )
-        )
+            ).splitlines()
+            if line.strip()
+        }
 
     except OSError:
         return set()
@@ -807,13 +846,55 @@ def is_allowlisted(
     return False
 
 
+def is_covered_by_reference(
+    hostname: str,
+    reference_domains: set[str],
+) -> bool:
+    """Return whether a reference AdGuard domain rule covers a hostname.
+
+    A rule for ``example.com`` also covers ``sub.example.com``. We therefore
+    check the hostname itself and each parent domain, but never treat a child
+    domain as covering its parent.
+    """
+
+    labels = hostname.split(".")
+
+    for index in range(len(labels) - 1):
+        candidate = ".".join(labels[index:])
+
+        if candidate in reference_domains:
+            return True
+
+    return False
+
+
+def find_reference_matches(
+    domains: set[str],
+    reference_domains: set[str],
+) -> set[str]:
+    """Return domains covered by a reference blocklist using AdGuard semantics."""
+
+    if not domains or not reference_domains:
+        return set()
+
+    return {
+        hostname
+        for hostname in domains
+        if is_covered_by_reference(
+            hostname,
+            reference_domains,
+        )
+    }
+
+
 def build_combined(
     source_domains: dict[str, set[str]],
     local_allowlist: set[str],
     trusted_suffixes: set[str],
     external_allowlists: dict[str, set[str]],
-) -> tuple[set[str], dict[str, int], dict[str, int]]:
-    """Build the final unique domain set using local exact/suffix rules."""
+    reference_domains: dict[str, set[str]],
+) -> tuple[set[str], dict[str, int], dict[str, int], dict[str, set[str]]]:
+    """Build the final unique domain set and remove HaGeZi-covered domains."""
 
     all_domains: set[str] = set()
 
@@ -849,9 +930,24 @@ def build_combined(
         in external_allowlists.items()
     }
 
-    final_domains = (
+    after_allowlist = (
         all_domains - blocked_by_allowlist
     )
+
+    reference_matches: dict[str, set[str]] = {}
+
+    for source_id, domains in reference_domains.items():
+        reference_matches[source_id] = find_reference_matches(
+            after_allowlist,
+            domains,
+        )
+
+    reference_union: set[str] = set()
+
+    for matches in reference_matches.values():
+        reference_union.update(matches)
+
+    final_domains = after_allowlist - reference_union
 
     return final_domains, {
         "raw_unique": len(all_domains),
@@ -865,8 +961,19 @@ def build_combined(
         "external_allowlisted": len(
             all_domains & external_allowlist_union
         ),
+        "hagezi_covered": len(reference_union),
+        "hagezi_tif_covered": len(
+            reference_matches.get("hagezi_tif", set())
+        ),
+        "hagezi_ultimate_covered": len(
+            reference_matches.get("hagezi_ultimate", set())
+        ),
+        "hagezi_both_covered": len(
+            reference_matches.get("hagezi_tif", set())
+            & reference_matches.get("hagezi_ultimate", set())
+        ),
         "final_unique": len(final_domains),
-    }, external_matches
+    }, external_matches, reference_matches
 
 
 
@@ -917,6 +1024,10 @@ def write_statistics(
     trusted_suffixes: set[str],
     final_domains: set[str],
     allowlist_matches: dict[str, int],
+    reference_domains: dict[str, set[str]],
+    reference_status: dict[str, str],
+    reference_matches: dict[str, set[str]],
+    build_summary: dict[str, int],
 ) -> None:
     """Write machine-readable statistics."""
 
@@ -955,6 +1066,48 @@ def write_statistics(
             ),
             "domain_count": len(
                 source_domains.get(
+                    source_id,
+                    set(),
+                )
+            ),
+            "last_success": source_state.get(
+                "last_success"
+            ),
+            "last_success_ist": source_state.get(
+                "last_success_ist"
+            ),
+        }
+
+    reference_sources = {}
+
+    for source_id, source in REFERENCE_SOURCES.items():
+
+        source_state = state.get(
+            source_id,
+            {},
+        )
+
+        reference_sources[source_id] = {
+            "name": source["name"],
+            "url": source.get(
+                "public_url",
+                source.get("url", ""),
+            ),
+            "refresh_interval_hours": (
+                source["interval_hours"]
+            ),
+            "status": reference_status.get(
+                source_id,
+                "unknown",
+            ),
+            "domain_count": len(
+                reference_domains.get(
+                    source_id,
+                    set(),
+                )
+            ),
+            "matched_blocked_domains": len(
+                reference_matches.get(
                     source_id,
                     set(),
                 )
@@ -1057,6 +1210,19 @@ def write_statistics(
         "final_unique_domains": len(
             final_domains
         ),
+        "hagezi_reference_sources": reference_sources,
+        "hagezi_covered_domains": build_summary[
+            "hagezi_covered"
+        ],
+        "hagezi_tif_covered_domains": build_summary[
+            "hagezi_tif_covered"
+        ],
+        "hagezi_ultimate_covered_domains": build_summary[
+            "hagezi_ultimate_covered"
+        ],
+        "hagezi_both_covered_domains": build_summary[
+            "hagezi_both_covered"
+        ],
         "overlap": overlap,
     }
 
@@ -1085,6 +1251,7 @@ def write_final_list(
     trusted_suffixes: set[str],
     external_allowlists: dict[str, set[str]],
     allowlist_matches: dict[str, int],
+    build_summary: dict[str, int],
 ) -> None:
     """Write the final AdGuard Home blocklist."""
 
@@ -1185,6 +1352,26 @@ def write_final_list(
             f"{external_matches:,}\n"
         )
 
+        f.write(
+            f"# HaGeZi TIF-covered domains removed: "
+            f"{build_summary['hagezi_tif_covered']:,}\n"
+        )
+
+        f.write(
+            f"# HaGeZi Ultimate-covered domains removed: "
+            f"{build_summary['hagezi_ultimate_covered']:,}\n"
+        )
+
+        f.write(
+            f"# Domains covered by both HaGeZi lists: "
+            f"{build_summary['hagezi_both_covered']:,}\n"
+        )
+
+        f.write(
+            f"# Total HaGeZi-covered domains removed: "
+            f"{build_summary['hagezi_covered']:,}\n"
+        )
+
         for source_id, source in SOURCES.items():
 
             f.write(
@@ -1256,6 +1443,30 @@ def main() -> None:
             status
         )
 
+    reference_domains: dict[
+        str,
+        set[str],
+    ] = {}
+
+    reference_status: dict[
+        str,
+        str,
+    ] = {}
+
+    print()
+    print("=== HaGeZi Reference Lists ===")
+
+    for source_id, source in REFERENCE_SOURCES.items():
+
+        domains, status = refresh_source(
+            source_id,
+            source,
+            state,
+        )
+
+        reference_domains[source_id] = domains
+        reference_status[source_id] = status
+
     allowlist_domains: dict[
         str,
         set[str],
@@ -1296,11 +1507,13 @@ def main() -> None:
         final_domains,
         summary,
         allowlist_matches,
+        reference_matches,
     ) = build_combined(
         source_domains,
         local_allowlist,
         trusted_suffixes,
         allowlist_domains,
+        reference_domains,
     )
 
     write_final_list(
@@ -1310,6 +1523,7 @@ def main() -> None:
         trusted_suffixes,
         allowlist_domains,
         allowlist_matches,
+        summary,
     )
 
     write_statistics(
@@ -1322,6 +1536,10 @@ def main() -> None:
         trusted_suffixes,
         final_domains,
         allowlist_matches,
+        reference_domains,
+        reference_status,
+        reference_matches,
+        summary,
     )
 
     print()
@@ -1359,6 +1577,26 @@ def main() -> None:
     print(
         f"Allowlisted:        "
         f"{summary['allowlisted']:,}"
+    )
+
+    print(
+        f"HaGeZi TIF-covered: "
+        f"{summary['hagezi_tif_covered']:,}"
+    )
+
+    print(
+        f"HaGeZi Ultimate-covered: "
+        f"{summary['hagezi_ultimate_covered']:,}"
+    )
+
+    print(
+        f"HaGeZi both-covered: "
+        f"{summary['hagezi_both_covered']:,}"
+    )
+
+    print(
+        f"HaGeZi total removed: "
+        f"{summary['hagezi_covered']:,}"
     )
 
     print(
