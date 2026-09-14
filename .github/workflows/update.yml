@@ -180,6 +180,29 @@ jobs:
                   """
               )
 
+          reference_rows = []
+
+          for source in stats["hagezi_reference_sources"].values():
+              name = html.escape(source["name"])
+              count = f'{source["domain_count"]:,}'
+              matches = f'{source["matched_blocked_domains"]:,}'
+              status = html.escape(source["status"])
+              last_success = html.escape(
+                  source["last_success_ist"] or "Never"
+              )
+
+              reference_rows.append(
+                  f"""
+                  <tr>
+                    <td>{name}</td>
+                    <td>{count}</td>
+                    <td>{matches}</td>
+                    <td>{status}</td>
+                    <td>{last_success}</td>
+                  </tr>
+                  """
+              )
+
           generated_at = html.escape(
               stats["generated_at_ist"]
           )
@@ -197,6 +220,16 @@ jobs:
           external_allowlist = (
               f'{stats["external_allowlist_entries"]:,}'
           )
+
+          hagezi_covered = f'{stats["hagezi_covered_domains"]:,}'
+
+          hagezi_tif = f'{stats["hagezi_tif_covered_domains"]:,}'
+
+          hagezi_ultimate = (
+              f'{stats["hagezi_ultimate_covered_domains"]:,}'
+          )
+
+          hagezi_both = f'{stats["hagezi_both_covered_domains"]:,}'
 
           local_matches = (
               f'{stats["local_allowlist_matches"]:,}'
@@ -326,6 +359,21 @@ jobs:
                 <div class="number">{external_allowlist}</div>
               </div>
 
+              <div class="card">
+                <div>HaGeZi coverage removed</div>
+                <div class="number">{hagezi_covered}</div>
+              </div>
+
+              <div class="card">
+                <div>HaGeZi TIF removed</div>
+                <div class="number">{hagezi_tif}</div>
+              </div>
+
+              <div class="card">
+                <div>HaGeZi Ultimate removed</div>
+                <div class="number">{hagezi_ultimate}</div>
+              </div>
+
             </div>
 
             <p>
@@ -389,6 +437,44 @@ jobs:
               </tbody>
 
             </table>
+
+            <h2>HaGeZi Deduplication Sources</h2>
+
+            <p>
+              These lists are used only as reference blocklists. Domains
+              already covered by HaGeZi TIF or Multi Ultimate are removed
+              from this project's final output using AdGuard parent-domain
+              matching semantics. The HaGeZi lists themselves are not
+              included in the published blocklist.
+            </p>
+
+            <table>
+
+              <thead>
+                <tr>
+                  <th>Reference list</th>
+                  <th>Domains</th>
+                  <th>Our domains removed</th>
+                  <th>Status</th>
+                  <th>Last successful update (IST)</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {"".join(reference_rows)}
+              </tbody>
+
+            </table>
+
+            <p>
+              HaGeZi TIF matches: <strong>{hagezi_tif}</strong>
+              &nbsp; | &nbsp;
+              HaGeZi Ultimate matches: <strong>{hagezi_ultimate}</strong>
+              &nbsp; | &nbsp;
+              Covered by both: <strong>{hagezi_both}</strong>
+              &nbsp; | &nbsp;
+              Unique HaGeZi coverage removed: <strong>{hagezi_covered}</strong>
+            </p>
 
             <p>
               Local allowlist matches removed:
