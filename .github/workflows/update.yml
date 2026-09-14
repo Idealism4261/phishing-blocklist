@@ -82,6 +82,8 @@ jobs:
       # ------------------------------------------------------------
 
       - name: Build blocklist
+        env:
+          THREATFOX_HOSTFILE_URL: ${{ secrets.THREATFOX_HOSTFILE_URL }}
         run: |
           python scripts/build.py
 
