@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import ipaddress
+import os
 import json
 import re
 from datetime import datetime, timezone, timedelta
@@ -75,6 +76,19 @@ SOURCES = {
         ),
         "interval_hours": 12,
         "parser": "phishtank",
+    },
+
+    "threatfox": {
+        "name": "ThreatFox Malware / C2 Domains",
+        "url_template": (
+            "https://threatfox-api.abuse.ch/v2/files/exports/"
+            "{auth_key}/hostfile.txt"
+        ),
+        "public_url": "https://threatfox.abuse.ch/downloads/hostfile/",
+        "auth_env": "THREATFOX_AUTH_KEY",
+        "url_env": "THREATFOX_HOSTFILE_URL",
+        "interval_hours": 2,
+        "parser": "threatfox_hostfile",
     },
 }
 
@@ -267,6 +281,37 @@ def parse_urls(text: str) -> set[str]:
     return parse_domains(text)
 
 
+def parse_threatfox_hostfile(text: str) -> set[str]:
+    """Parse ThreatFox's host-file export into normalized hostnames."""
+
+    domains: set[str] = set()
+
+    for line in text.splitlines():
+        line = line.strip()
+
+        if not line or line.startswith("#"):
+            continue
+
+        # ThreatFox uses host-file format, normally: "127.0.0.1 domain".
+        # Ignore the sinkhole IP and normalize the hostname token.
+        parts = line.split()
+
+        if len(parts) < 2:
+            continue
+
+        try:
+            ipaddress.ip_address(parts[0])
+        except ValueError:
+            continue
+
+        hostname = normalize_hostname(parts[1])
+
+        if hostname:
+            domains.add(hostname)
+
+    return domains
+
+
 def parse_allowlist_domains(text: str) -> set[str]:
     """Parse exact-hostname entries from an AdGuard allowlist."""
 
@@ -403,6 +448,9 @@ def parse_feed(
     if parser == "phishtank":
         return parse_phishtank(text)
 
+    if parser == "threatfox_hostfile":
+        return parse_threatfox_hostfile(text)
+
     raise ValueError(
         f"Unknown parser: {parser}"
     )
@@ -529,6 +577,36 @@ def is_due(
     )
 
 
+def resolve_source_url(source: dict) -> str:
+    """Resolve a source URL, including authenticated URL templates."""
+
+    if "url" in source:
+        return source["url"]
+
+    url_env = source.get("url_env")
+
+    if url_env:
+        configured_url = os.environ.get(url_env, "").strip()
+
+        if configured_url:
+            return configured_url
+
+    template = source.get("url_template")
+    auth_env = source.get("auth_env")
+
+    if template and auth_env:
+        auth_key = os.environ.get(auth_env, "").strip()
+
+        if not auth_key:
+            raise RuntimeError(
+                f"Required environment variable {auth_env} is not set"
+            )
+
+        return template.format(auth_key=auth_key)
+
+    raise RuntimeError("Source has no usable URL configuration")
+
+
 def download_feed(
     url: str,
 ) -> str:
@@ -605,8 +683,10 @@ def refresh_source(
     previous_count = len(snapshot)
 
     try:
+        url = resolve_source_url(source)
+
         text = download_feed(
-            source["url"]
+            url
         )
 
         domains = parse_feed(
@@ -862,7 +942,10 @@ def write_statistics(
 
         sources[source_id] = {
             "name": source["name"],
-            "url": source["url"],
+            "url": source.get(
+                "public_url",
+                source.get("url", ""),
+            ),
             "refresh_interval_hours": (
                 source["interval_hours"]
             ),
