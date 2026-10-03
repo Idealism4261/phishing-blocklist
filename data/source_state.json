@@ -1,0 +1,52 @@
+{
+  "anudeepnd": {
+    "last_count": 191,
+    "last_success": "2026-10-02T19:24:16Z",
+    "last_success_ist": "2026-10-03 00:54:16 IST"
+  },
+  "cert_polska": {
+    "last_count": 127390,
+    "last_success": "2026-10-03T16:29:25Z",
+    "last_success_ist": "2026-10-03 21:59:25 IST"
+  },
+  "dandelionsprout": {
+    "last_count": 285,
+    "last_success": "2026-10-02T19:24:16Z",
+    "last_success_ist": "2026-10-03 00:54:16 IST"
+  },
+  "destroylist": {
+    "last_count": 131918,
+    "last_success": "2026-10-03T16:29:27Z",
+    "last_success_ist": "2026-10-03 21:59:27 IST"
+  },
+  "hagezi_tif": {
+    "last_count": 2376001,
+    "last_success": "2026-10-03T11:48:56Z",
+    "last_success_ist": "2026-10-03 17:18:56 IST"
+  },
+  "hagezi_ultimate": {
+    "last_count": 284074,
+    "last_success": "2026-10-03T11:48:59Z",
+    "last_success_ist": "2026-10-03 17:18:59 IST"
+  },
+  "openphish": {
+    "last_count": 285,
+    "last_success": "2026-10-03T05:26:40Z",
+    "last_success_ist": "2026-10-03 10:56:40 IST"
+  },
+  "phishing_database": {
+    "last_count": 386093,
+    "last_success": "2026-10-03T16:29:23Z",
+    "last_success_ist": "2026-10-03 21:59:23 IST"
+  },
+  "phishtank": {
+    "last_count": 40749,
+    "last_success": "2026-10-03T05:26:45Z",
+    "last_success_ist": "2026-10-03 10:56:45 IST"
+  },
+  "threatfox": {
+    "last_count": 42270,
+    "last_success": "2026-10-03T16:29:29Z",
+    "last_success_ist": "2026-10-03 21:59:29 IST"
+  }
+}

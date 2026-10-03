@@ -1,0 +1,125 @@
+{
+  "allowlist_entries": 1353,
+  "allowlist_sources": {
+    "anudeepnd": {
+      "domain_count": 191,
+      "last_success": "2026-10-02T19:24:16Z",
+      "last_success_ist": "2026-10-03 00:54:16 IST",
+      "matched_blocked_domains": 6,
+      "name": "AnudeepND Whitelist",
+      "refresh_interval_hours": 24,
+      "status": "cached",
+      "url": "https://raw.githubusercontent.com/anudeepND/whitelist/master/domains/whitelist.txt"
+    },
+    "dandelionsprout": {
+      "domain_count": 285,
+      "last_success": "2026-10-02T19:24:16Z",
+      "last_success_ist": "2026-10-03 00:54:16 IST",
+      "matched_blocked_domains": 6,
+      "name": "DandelionSprout AdGuard Home Whitelist",
+      "refresh_interval_hours": 24,
+      "status": "cached",
+      "url": "https://raw.githubusercontent.com/DandelionSprout/AdGuard-Home-Whitelist/master/whitelist.txt"
+    }
+  },
+  "external_allowlist_entries": 300,
+  "external_allowlist_matches": 6,
+  "final_unique_domains": 514765,
+  "generated_at": "2026-10-03T16:29:37Z",
+  "generated_at_ist": "2026-10-03 21:59:37 IST",
+  "hagezi_both_covered_domains": 36925,
+  "hagezi_covered_domains": 193570,
+  "hagezi_reference_sources": {
+    "hagezi_tif": {
+      "domain_count": 2376001,
+      "last_success": "2026-10-03T11:48:56Z",
+      "last_success_ist": "2026-10-03 17:18:56 IST",
+      "matched_blocked_domains": 168104,
+      "name": "HaGeZi Threat Intelligence Feeds (TIF)",
+      "refresh_interval_hours": 6,
+      "status": "cached",
+      "url": "https://github.com/hagezi/dns-blocklists/blob/main/wildcard/tif-onlydomains.txt"
+    },
+    "hagezi_ultimate": {
+      "domain_count": 284074,
+      "last_success": "2026-10-03T11:48:59Z",
+      "last_success_ist": "2026-10-03 17:18:59 IST",
+      "matched_blocked_domains": 62391,
+      "name": "HaGeZi Multi Ultimate",
+      "refresh_interval_hours": 6,
+      "status": "cached",
+      "url": "https://github.com/hagezi/dns-blocklists/blob/main/wildcard/ultimate-onlydomains.txt"
+    }
+  },
+  "hagezi_tif_covered_domains": 168104,
+  "hagezi_ultimate_covered_domains": 62391,
+  "local_allowlist_entries": 1093,
+  "local_allowlist_matches": 32,
+  "overlap": {
+    "source_count_distribution": {
+      "1_source": 691934,
+      "2_source": 17899,
+      "3_source": 323,
+      "4_source": 1
+    }
+  },
+  "raw_unique_domains": 710157,
+  "sources": {
+    "cert_polska": {
+      "domain_count": 127390,
+      "last_success": "2026-10-03T16:29:25Z",
+      "last_success_ist": "2026-10-03 21:59:25 IST",
+      "name": "CERT Polska Warning List v2",
+      "refresh_interval_hours": 2,
+      "status": "updated",
+      "url": "https://hole.cert.pl/domains/v2/domains.txt"
+    },
+    "destroylist": {
+      "domain_count": 131918,
+      "last_success": "2026-10-03T16:29:27Z",
+      "last_success_ist": "2026-10-03 21:59:27 IST",
+      "name": "PhishDestroy Destroylist Primary Active",
+      "refresh_interval_hours": 2,
+      "status": "updated",
+      "url": "https://cdn.jsdelivr.net/gh/phishdestroy/destroylist@main/rootlist/formats/primary_active/domains.txt"
+    },
+    "openphish": {
+      "domain_count": 285,
+      "last_success": "2026-10-03T05:26:40Z",
+      "last_success_ist": "2026-10-03 10:56:40 IST",
+      "name": "OpenPhish Community Feed",
+      "refresh_interval_hours": 12,
+      "status": "cached",
+      "url": "https://raw.githubusercontent.com/openphish/public_feed/main/feed.txt"
+    },
+    "phishing_database": {
+      "domain_count": 386093,
+      "last_success": "2026-10-03T16:29:23Z",
+      "last_success_ist": "2026-10-03 21:59:23 IST",
+      "name": "Phishing.Database",
+      "refresh_interval_hours": 2,
+      "status": "updated",
+      "url": "https://raw.githubusercontent.com/Phishing-Database/Phishing.Database/master/phishing-domains-ACTIVE.txt"
+    },
+    "phishtank": {
+      "domain_count": 40749,
+      "last_success": "2026-10-03T05:26:45Z",
+      "last_success_ist": "2026-10-03 10:56:45 IST",
+      "name": "PhishTank online-valid",
+      "refresh_interval_hours": 12,
+      "status": "cached",
+      "url": "https://data.phishtank.com/data/online-valid.csv"
+    },
+    "threatfox": {
+      "domain_count": 42270,
+      "last_success": "2026-10-03T16:29:29Z",
+      "last_success_ist": "2026-10-03 21:59:29 IST",
+      "name": "ThreatFox Malware / C2 Domains",
+      "refresh_interval_hours": 2,
+      "status": "updated",
+      "url": "https://threatfox.abuse.ch/downloads/hostfile/"
+    }
+  },
+  "trusted_suffix_entries": 34,
+  "trusted_suffix_matches": 1800
+}
